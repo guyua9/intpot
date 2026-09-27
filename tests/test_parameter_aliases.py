@@ -182,14 +182,16 @@ def test_typer_boolean_option_pair_survives_live_and_generated_cli() -> None:
 
     @source.command()
     def report(
-        verbose: Annotated[bool, typer.Option("--verbose/--no-verbose", "-v")] = True,
+        enabled: Annotated[
+            bool, typer.Option("--enabled/--disabled", "-e/-d", "-x")
+        ] = True,
     ) -> None:
-        print(verbose)
+        print(enabled)
 
     [info] = CLIInspector().inspect(source)
-    [verbose] = info.parameters
-    assert verbose.interface_name == "verbose"
-    assert verbose.aliases == ["--verbose/--no-verbose", "-v"]
+    [enabled] = info.parameters
+    assert enabled.interface_name == "enabled"
+    assert enabled.aliases == ["--enabled/--disabled", "-e/-d", "-x"]
 
     schema = ApplicationSchema.from_tools(
         name="aliases", source_type=SourceType.CLI, tools=(info,)
@@ -202,12 +204,16 @@ def test_typer_boolean_option_pair_survives_live_and_generated_cli() -> None:
     )
 
     for app in (source, live, generated.app):
-        enabled = runner.invoke(app, ["--verbose"])
-        assert enabled.exit_code == 0, enabled.output
-        assert enabled.output.strip() == "True"
-        disabled = runner.invoke(app, ["--no-verbose"])
-        assert disabled.exit_code == 0, disabled.output
-        assert disabled.output.strip() == "False"
+        for flag, expected in (
+            ("--enabled", "True"),
+            ("--disabled", "False"),
+            ("-e", "True"),
+            ("-d", "False"),
+            ("-x", "True"),
+        ):
+            result = runner.invoke(app, [flag])
+            assert result.exit_code == 0, result.output
+            assert result.output.strip() == expected
 
 
 def test_fastapi_aliases_become_required_and_optional_cli_options() -> None:

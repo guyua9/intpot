@@ -53,7 +53,9 @@ def test_inspect_typer_option_aliases_and_boolean_pairs():
     @app.command()
     def lookup(
         account_id: Annotated[str, typer.Option("--customer-id", "-c")],
-        verbose: Annotated[bool, typer.Option("--verbose/--no-verbose", "-v")] = True,
+        verbose: Annotated[
+            bool, typer.Option("--verbose/--no-verbose", "-v/-q")
+        ] = True,
     ) -> None:
         pass
 
@@ -62,7 +64,7 @@ def test_inspect_typer_option_aliases_and_boolean_pairs():
     assert tool.parameters[0].interface_name == "customer-id"
     assert tool.parameters[0].aliases == ["--customer-id", "-c"]
     assert tool.parameters[1].interface_name == "verbose"
-    assert tool.parameters[1].aliases == ["--verbose/--no-verbose", "-v"]
+    assert tool.parameters[1].aliases == ["--verbose/--no-verbose", "-v/-q"]
 
 
 def test_inspect_empty_typer():

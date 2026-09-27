@@ -68,7 +68,11 @@ def _option_aliases(param: Any) -> list[str]:
         if isinstance(option, str) and option.startswith("-")
     ]
     if primary and secondary:
-        return [f"{primary[0]}/{secondary[0]}", *primary[1:], *secondary[1:]]
+        paired_count = min(len(primary), len(secondary))
+        paired = [
+            f"{primary[index]}/{secondary[index]}" for index in range(paired_count)
+        ]
+        return [*paired, *primary[paired_count:], *secondary[paired_count:]]
     return [*primary, *secondary]
 
 
