@@ -183,7 +183,7 @@ def test_typer_boolean_option_pair_survives_live_and_generated_cli() -> None:
     @source.command()
     def report(
         enabled: Annotated[
-            bool, typer.Option("--enabled/--disabled", "-e/-d", "-x")
+            bool, typer.Option("--enabled/--disabled", "-e/-q", " /-d")
         ] = True,
     ) -> None:
         print(enabled)
@@ -191,7 +191,7 @@ def test_typer_boolean_option_pair_survives_live_and_generated_cli() -> None:
     [info] = CLIInspector().inspect(source)
     [enabled] = info.parameters
     assert enabled.interface_name == "enabled"
-    assert enabled.aliases == ["--enabled/--disabled", "-e/-d", "-x"]
+    assert enabled.aliases == ["--enabled/--disabled", "-e/-q", " /-d"]
 
     schema = ApplicationSchema.from_tools(
         name="aliases", source_type=SourceType.CLI, tools=(info,)
@@ -208,8 +208,8 @@ def test_typer_boolean_option_pair_survives_live_and_generated_cli() -> None:
             ("--enabled", "True"),
             ("--disabled", "False"),
             ("-e", "True"),
+            ("-q", "False"),
             ("-d", "False"),
-            ("-x", "True"),
         ):
             result = runner.invoke(app, [flag])
             assert result.exit_code == 0, result.output

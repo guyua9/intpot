@@ -72,7 +72,8 @@ def _option_aliases(param: Any) -> list[str]:
         paired = [
             f"{primary[index]}/{secondary[index]}" for index in range(paired_count)
         ]
-        return [*paired, *primary[paired_count:], *secondary[paired_count:]]
+        unmatched_secondary = [f" /{option}" for option in secondary[paired_count:]]
+        return [*paired, *primary[paired_count:], *unmatched_secondary]
     return [*primary, *secondary]
 
 
