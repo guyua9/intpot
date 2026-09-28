@@ -10,6 +10,26 @@ release assembles them here — run `make changelog-draft` to preview them.
 
 <!-- towncrier release notes start -->
 
+## [0.9.0] - 2026-09-27
+
+### Added
+
+- FastAPI inspection, live serving, and generated applications now preserve operation IDs, route names, summaries, descriptions, tags, and deprecation state.
+- FastAPI parameter aliases and exact Typer option declarations are now preserved across inspection, live serving, target projection, and generated applications.
+
+### Changed
+
+- CLI, FastAPI, and FastMCP now share explicit target parameter-placement rules across live and generated interfaces.
+- Live and generated CLI, FastAPI, and FastMCP interfaces now preserve explicit framework-visible tool names separately from Python-safe bindings.
+
+### Fixed
+
+- Generated CLI, FastAPI, and FastMCP code now preserves valid source callable parameter bindings when canonical sanitization or collision suffixing changes their names.
+- Live and ejected interfaces now share executable parity coverage for CLI, FastAPI, and FastMCP behavior, including defaults, naming, async results, errors, unannotated parameter contracts, and renamed recursive tools. Self-reference adaptation preserves parameters, local assignments, nested-scope shadowing, replacement-name collisions, and explicit `global` declarations. Generated CLIs preserve canonical underscore command names and top-level help, safely await coroutine objects returned by synchronous tools, and keep their framework helpers collision-safe. FastAPI routes preserve canonical names and parameter descriptions, and unknown HTTP methods consistently fall back to POST.
+- FastAPI and FastMCP functions now preserve early-return control flow when converted to generated CLI commands, including functions with source-framework return annotations.
+- Generated code now preserves imports required by function bodies and annotations using structural, per-binding analysis, including aliases, forward references, augmented assignments, and deletions. Generated framework imports use private aliases, and unavoidable public binding collisions fail explicitly instead of producing incorrect code.
+
+
 ## [0.8.0] - 2026-09-01
 
 ### Added
