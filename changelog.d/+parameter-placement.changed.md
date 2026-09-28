@@ -1,1 +1,0 @@
-CLI, FastAPI, and FastMCP now share explicit target parameter-placement rules across live and generated interfaces.

@@ -1,1 +1,0 @@
-FastAPI inspection, live serving, and generated applications now preserve operation IDs, route names, summaries, descriptions, tags, and deprecation state.

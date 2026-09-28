@@ -43,7 +43,7 @@ Build confidence in the current supported subset as the foundation for wider cov
 The phases below express priority, not promised release dates. Correctness and contract
 consolidation come before deeper transformations or performance infrastructure.
 
-## v0.8 — Current foundation
+## v0.9 — Current foundation
 
 - **One definition, three live interfaces:** registered Python functions can run through
   Typer, FastAPI, or FastMCP, or be ejected as framework source.
@@ -53,6 +53,9 @@ consolidation come before deeper transformations or performance infrastructure.
   support inspection and generation; `ToolInfo` compatibility views remain available.
 - **Target projections:** conversion exposes intermediate target projections before
   rendering. Some effective parameter defaults are still decided by templates.
+- **Shared interface identity:** framework-visible tool names, source Python parameter
+  bindings, target-visible parameter aliases, and FastAPI route metadata remain distinct
+  in the canonical schema and are consumed consistently by live and generated interfaces.
 - **Strict schema serialization:** supported non-JSON defaults use tagged `$intpot`
   envelopes; executable default rendering preserves supported value semantics.
 - **Basic body transforms:** supported CLI output and return conventions are translated;
