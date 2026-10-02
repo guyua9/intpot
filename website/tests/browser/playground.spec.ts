@@ -4,45 +4,71 @@ import { expect, test } from '@playwright/test';
 const evidence = process.env.PLAYGROUND_EVIDENCE_DIR ?? new URL('../../evidence/playground-refinement/intpot/', import.meta.url).pathname;
 mkdirSync(evidence, { recursive: true });
 
-test('one compact workbench keeps source, request and result in the same two-column composition', async ({ page }) => {
+test('output tabs share a 44px baseline and the active panel fits the inspector at every viewport', async ({ page }) => {
+  for (const width of [1280, 768, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/playground/');
+    await page.getByRole('button', { name: /Run local preview/ }).click();
+    await page.evaluate(async () => {
+      await document.fonts.ready;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    });
+    const geometry = await page.evaluate(() => {
+      const inspector = document.querySelector('.inspector')!.getBoundingClientRect();
+      const panel = document.querySelector('#output-panel')!.getBoundingClientRect();
+      const tabs = [...document.querySelectorAll('.output-nav button')].map((tab) => {
+        const box = tab.getBoundingClientRect();
+        return { top: box.top, height: box.height };
+      });
+      return { tabs, panelBottom: panel.bottom, inspectorBottom: inspector.bottom };
+    });
+    expect(Math.max(...geometry.tabs.map((tab) => tab.top)) - Math.min(...geometry.tabs.map((tab) => tab.top))).toBeLessThanOrEqual(1);
+    for (const tab of geometry.tabs) expect(tab.height).toBe(44);
+    expect(geometry.panelBottom).toBeLessThanOrEqual(geometry.inspectorBottom);
+  }
+});
+
+test('one bounded output inspector stays in the source-request-inspect workbench after every output view is selected', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/playground/');
-  const details = page.locator('.result-details');
-  await expect(details).toHaveCount(2);
-  await expect(details.nth(0)).not.toHaveAttribute('open', '');
-  await expect(details.nth(1)).not.toHaveAttribute('open', '');
+  await page.getByRole('button', { name: /Run local preview/ }).click();
+  const inspector = page.getByRole('region', { name: 'Output inspection' });
+  await expect(inspector).toBeVisible();
+  const initial = await inspector.boundingBox();
+  for (const view of ['Result', 'Typed arguments', 'Interface response', 'Request trace']) {
+    const viewTab = page.getByRole('tab', { name: view });
+    await viewTab.click();
+    await expect(viewTab).toHaveAttribute('aria-selected', 'true');
+    const current = await inspector.boundingBox();
+    expect(current?.height).toBeLessThanOrEqual((initial?.height ?? 0) + 2);
+    expect(current?.y).toBeLessThan(700);
+    await page.screenshot({ path: `${evidence}1280-output-${view.toLowerCase().replaceAll(' ', '-')}.png`, fullPage: true });
+  }
+  await page.getByRole('tab', { name: 'Result' }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('tab', { name: 'Typed arguments' })).toHaveAttribute('aria-selected', 'true');
+
   await expect(page.locator('.definition code')).toContainText('def greet');
   const input = page.getByLabel('Editable interface request');
   await input.fill("greet 'Composition' --excited");
   await page.getByRole('button', { name: /Run local preview/ }).click();
   await expect(page.locator('#computed')).toHaveText('Hello, Composition!');
   const layout = await page.evaluate(() => {
-    const box = (selector: string) => {
-      const rect = document.querySelector(selector)!.getBoundingClientRect();
-      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
-    };
-    return { source: box('.definition'), tabs: box('.interface-nav'), request: box('.request'), result: box('.result'), documentHeight: document.documentElement.scrollHeight };
+    const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+    const source = rect('.definition'); const request = rect('.request'); const inspector = rect('.inspector');
+    return { source, request, inspector, width: innerWidth, pageWidth: document.documentElement.scrollWidth };
   });
-  expect(layout.source.left).toBeLessThan(layout.tabs.left);
-  expect(Math.abs(layout.source.top - layout.tabs.top)).toBeLessThanOrEqual(2);
-  expect(layout.request.left).toBeGreaterThan(layout.source.left);
-  expect(layout.result.left).toBe(layout.request.left);
-  expect(layout.result.right).toBeLessThanOrEqual(layout.request.right + 1);
-  expect(layout.result.top - layout.request.top).toBeLessThan(320);
-  expect(layout.result.bottom).toBeLessThan(layout.documentHeight - 100);
-  await details.nth(0).locator('summary').focus();
-  await page.keyboard.press('Enter');
-  await expect(details.nth(0)).toHaveAttribute('open', '');
-  await expect(details.nth(1)).not.toHaveAttribute('open', '');
-  await details.nth(1).locator('summary').focus();
-  await page.keyboard.press('Space');
-  await expect(details.nth(1)).toHaveAttribute('open', '');
+  expect(layout.source.left).toBeLessThan(layout.request.left);
+  expect(layout.request.left).toBeLessThan(layout.inspector.left);
+  expect(layout.pageWidth).toBeLessThanOrEqual(layout.width);
+  expect(layout.inspector.height).toBeLessThanOrEqual(330);
+  expect(layout.inspector.top).toBeLessThan(700);
 });
 
 test('all three interface tabs share a 44px baseline and retain reachable active state', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 390 });
   await page.goto('/playground/');
-  const measurements = await page.getByRole('tab').evaluateAll((tabs) => tabs.map((tab) => {
+  const measurements = await page.locator('.interface-nav [role="tab"]').evaluateAll((tabs) => tabs.map((tab) => {
     const rect = tab.getBoundingClientRect();
     return { top: rect.top, height: rect.height, left: rect.left, right: rect.right };
   }));
@@ -65,6 +91,39 @@ test('all three interface tabs share a 44px baseline and retain reachable active
   await expect(page.getByRole('tab', { name: /MCP/ })).toHaveAttribute('aria-selected', 'true');
 });
 
+test('long output scrolls inside one inspector and edits clear the selected trace without switching tabs', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('/playground/');
+  const input = page.getByLabel('Editable interface request');
+  await page.getByRole('tab', { name: /MCP/ }).click();
+  // Forty characters is the preview's bound; newlines exercise long rendered output without widening it.
+  const name = '\n'.repeat(39) + 'x';
+  await input.fill(JSON.stringify({ name: 'greet', arguments: { name, excited: true } }));
+  await page.getByRole('button', { name: /Run local preview/ }).click();
+  await expect(page.locator('#computed')).toHaveText(`Hello, ${name}!`);
+  for (const view of ['Result', 'Typed arguments', 'Interface response', 'Request trace']) {
+    await page.getByRole('tab', { name: view, exact: true }).click();
+    await expect(page.locator('.output-view:visible')).toHaveCount(1);
+    const bounds = await page.locator('.inspector').boundingBox();
+    expect(bounds?.height).toBe(272);
+    const scroller = page.locator('.output-view:visible pre, .output-view:visible ol');
+    const scrolling = await scroller.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+      return { scrollTop: element.scrollTop, overflow: getComputedStyle(element).overflowY };
+    });
+    expect(scrolling.overflow).toBe('auto');
+    if (view === 'Result' || view === 'Interface response') expect(scrolling.scrollTop).toBeGreaterThan(0);
+  }
+  await input.fill(JSON.stringify({ name: 'greet', arguments: { name: 'Edited' } }));
+  await expect(page.getByRole('tab', { name: 'Request trace', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('#trace')).toHaveText('Request edited; run again to compute a fresh result.');
+  await expect(page.locator('#arguments')).toHaveText('Not run');
+  await page.getByRole('button', { name: /Run local preview/ }).click();
+  await expect(page.locator('#trace')).toContainText('name="Edited"');
+  await page.getByRole('button', { name: 'Reset', exact: true }).click();
+  await expect(page.locator('#trace')).toHaveText('Choose a request and run its browser-local preview.');
+});
+
 test('bounded requests compute correct results, reject invalid requests safely, and reset', async ({ page }) => {
   await page.goto('/playground/');
   const input = page.getByLabel('Editable interface request');
@@ -72,7 +131,7 @@ test('bounded requests compute correct results, reject invalid requests safely, 
   await input.fill("greet '<img src=x onerror=alert(1)>' --excited");
   await page.getByRole('button', { name: /Run local preview/ }).click();
   await expect(page.locator('#computed')).toHaveText("Hello, <img src=x onerror=alert(1)>!");
-  await expect(page.locator('.result img')).toHaveCount(0);
+  await expect(page.locator('.inspector img')).toHaveCount(0);
   await page.getByRole('tab', { name: /HTTP/ }).click();
   await input.fill('{"method":"POST","path":"/greet","body":{"name":"World","excited":true}}');
   await page.getByRole('button', { name: /Run local preview/ }).click();
@@ -120,6 +179,8 @@ test('workbench fits viewports in both themes and reduced motion; captures durab
             definitionRight: definition.getBoundingClientRect().right,
             labelsOverlap: sourceBox.right > languageBox.left,
             codeCanScrollInternally: (definition.querySelector('pre')?.scrollWidth ?? 0) > (definition.querySelector('pre')?.clientWidth ?? 0),
+            outputTabsFit: (() => { const tabs = document.querySelector<HTMLElement>('.output-nav')!; return tabs.scrollWidth <= tabs.clientWidth; })(),
+            interfaceTabsShareRow: (() => { const tabs = [...document.querySelectorAll<HTMLElement>('.interface-nav [role="tab"]')]; return Math.max(...tabs.map((tab) => tab.getBoundingClientRect().top)) - Math.min(...tabs.map((tab) => tab.getBoundingClientRect().top)) <= 1; })(),
             offenders: [...document.querySelectorAll('body *')].map((element) => ({ tag: element.tagName, id: element.id, className: typeof element.className === 'string' ? element.className : '', text: element.textContent?.trim().slice(0, 40), left: Math.round(element.getBoundingClientRect().left), right: Math.round(element.getBoundingClientRect().right) })).filter((element) => element.right > innerWidth + 1 || element.left < -1).slice(0, 8),
           };
         });
@@ -128,7 +189,9 @@ test('workbench fits viewports in both themes and reduced motion; captures durab
         expect(geometry.workbenchRight, JSON.stringify(geometry)).toBeLessThanOrEqual(viewport.width);
         expect(geometry.definitionRight, JSON.stringify(geometry)).toBeLessThanOrEqual(viewport.width);
         expect(geometry.labelsOverlap, JSON.stringify(geometry)).toBe(false);
-        if (viewport.width === 320) expect(geometry.codeCanScrollInternally).toBe(true);
+        expect(geometry.outputTabsFit, JSON.stringify(geometry)).toBe(true);
+        expect(geometry.interfaceTabsShareRow, JSON.stringify(geometry)).toBe(true);
+        if (viewport.width === 320) expect(geometry.codeCanScrollInternally).toBe(false);
         await page.screenshot({ path: `${evidence}${viewport.width}-${viewport.height}-${colorScheme}-${reducedMotion}.png`, fullPage: true });
       }
     }
@@ -169,7 +232,7 @@ test('primary controls and highlighted code remain readable in both themes', asy
     expect(readings.actualBackground).not.toBe('rgba(0, 0, 0, 0)');
     expect(readings.actualInputBackground).not.toBe('rgba(0, 0, 0, 0)');
     for (const reading of readings.foregrounds) expect(reading.contrast, `${colorScheme}: ${JSON.stringify(reading)}`).toBeGreaterThanOrEqual(4.5);
-    const tops = await page.getByRole('tab').evaluateAll((tabs) => tabs.map((tab) => tab.getBoundingClientRect().top));
+    const tops = await page.locator('.interface-nav [role="tab"]').evaluateAll((tabs) => tabs.map((tab) => tab.getBoundingClientRect().top));
     expect(Math.max(...tops) - Math.min(...tops)).toBeLessThanOrEqual(1);
   }
 });
