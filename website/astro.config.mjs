@@ -24,12 +24,14 @@ const structuredData = {
 
 export default defineConfig({
   site: 'https://intpot.modepot.io',
+  vite: { preview: { strictPort: true } },
   integrations: [starlight({
     title: 'Intpot',
     description: 'Define typed Python tools once; expose CLI, API, and MCP interfaces.',
     favicon: '/intpot-mark.svg',
     social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/tugrulguner/intpot' }],
     customCss: ['./src/styles/custom.css'],
+    components: { Header: './src/components/FamilyHeader.astro' },
     head: [
       { tag: 'script', attrs: {}, content: posthogScript },
       { tag: 'link', attrs: { rel: 'alternate', type: 'text/plain', href: '/llms.txt', title: 'Intpot summary for AI agents' } },
@@ -46,7 +48,6 @@ export default defineConfig({
       { label: 'Start here', items: [{ slug: 'index', label: 'Overview' }, { slug: 'quickstart' }, { slug: 'playground' }] },
       { label: 'Guides', items: [{ slug: 'build-an-app' }, { slug: 'conversion-boundaries' }, { slug: 'capabilities' }] },
       { label: 'Reference', items: [{ slug: 'schema-reference' }, { slug: 'architecture-internals' }] },
-      { label: 'ModePot', link: 'https://modepot.io/' },
     ],
   })],
 });
