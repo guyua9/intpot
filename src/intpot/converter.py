@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import functools
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,50 @@ def tools_for_target(
     return project_schema(schema, target).to_tools()
 
 
+# Python loads a source file by decoding it with an ASCII-compatible encoding
+# named in a PEP 263 declaration on the first or second line. UTF-16 and
+# UTF-32 are not ASCII-compatible: they write a BOM and a null byte after every
+# character, and the loader rejects the result outright ("source code string
+# cannot contain null bytes"). The generated source is ASCII apart from text
+# copied out of the user's tool descriptions, so these cover what it can hold.
+# The declaration is written with the name `codecs` resolves, so "latin-1"
+# reaches the file as "iso8859-1".
+_SUPPORTED_SOURCE_ENCODINGS = frozenset({"utf-8", "iso8859-1", "cp1252", "ascii"})
+
+
+def _resolve_source_encoding(encoding: str) -> str:
+    """Resolve an encoding name to a supported source encoding.
+
+    Raises:
+        ValueError: If the name is unknown or cannot hold loadable Python source.
+    """
+    try:
+        resolved = codecs.lookup(encoding).name
+    except LookupError:
+        resolved = ""
+    if resolved not in _SUPPORTED_SOURCE_ENCODINGS:
+        supported = ", ".join(sorted(_SUPPORTED_SOURCE_ENCODINGS))
+        raise ValueError(
+            f"Unsupported source encoding {encoding!r}, expected one of: {supported}. "
+            "UTF-16/UTF-32 are excluded because Python cannot load source that "
+            "is not ASCII-compatible."
+        )
+    return resolved
+
+
+def _declare_source_encoding(code: str, encoding: str) -> str:
+    """Prepend a PEP 263 declaration when the file is not written as UTF-8.
+
+    A comment above the module docstring leaves the docstring a docstring, and
+    text that is not valid in the declared encoding would decode to garbage
+    without it.
+    """
+    if encoding == "utf-8":
+        return code
+    first, newline, rest = code.partition("\n")
+    return f"# -*- coding: {encoding} -*-{newline}{first}{newline}{rest}"
+
+
 class IntpotApp:
     """Wrapper around a detected app for programmatic conversion."""
 
@@ -226,14 +271,21 @@ class IntpotApp:
         Args:
             path: Output file path.
             target: Target framework — "cli", "mcp", "api" or a SourceType enum.
-            encoding: Text encoding used for the generated source file.
-            overwrite: Whether an existing output file may be replaced.
+            encoding: Text encoding for the generated source file. Must be
+                ASCII-compatible — UTF-8, Latin-1, cp1252 or ASCII — because
+                Python cannot load source that is not. A non-UTF-8 encoding
+                gets a PEP 263 declaration on the first line.
+            overwrite: Whether an existing output file may be replaced. When
+                false the file is created exclusively, so a destination another
+                writer creates while this call is running is never overwritten.
 
         Returns:
             The resolved Path that was written.
 
         Raises:
             FileExistsError: If ``overwrite`` is false and the output exists.
+            ValueError: If ``target`` is unknown, ``encoding`` is unsupported,
+                or the generated source cannot be represented in it.
         """
         # Accept both strings and SourceType enum
         if isinstance(target, SourceType):
@@ -242,12 +294,35 @@ class IntpotApp:
         generators = {"cli": self.to_cli, "mcp": self.to_mcp, "api": self.to_api}
         if target not in generators:
             raise ValueError(f"Unknown target '{target}', expected: cli, mcp, api")
+        resolved = _resolve_source_encoding(encoding)
         out = Path(path)
-        if out.exists() and not overwrite:
-            raise FileExistsError(f"Output file already exists: {out}")
-        code = generators[target]()
+        # Generate before opening: a generator failure must not leave a
+        # truncated file behind.
+        code = _declare_source_encoding(generators[target](), resolved)
+        # Checked up front for the same reason — an encoding error raised by
+        # the write itself would leave an empty file where the caller asked for
+        # a source file it can load.
+        try:
+            code.encode(resolved)
+        except UnicodeEncodeError as exc:
+            raise ValueError(
+                f"Generated source is not representable in {resolved!r}: {exc}. "
+                "Write it as utf-8, or pick an encoding that covers the text."
+            ) from None
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(code, encoding=encoding)
+        if overwrite:
+            with out.open("w", encoding=resolved) as handle:
+                handle.write(code)
+        else:
+            # Exclusive creation, not a check followed by a write: the check
+            # cannot close the window in which another writer — a concurrent
+            # build, or a watch process — creates the destination.
+            try:
+                handle = out.open("x", encoding=resolved)
+            except FileExistsError:
+                raise FileExistsError(f"Output file already exists: {out}") from None
+            with handle:
+                handle.write(code)
         return out.resolve()
 
 
