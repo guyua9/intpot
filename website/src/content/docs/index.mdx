@@ -1,0 +1,78 @@
+---
+title: Python CLI, API, and MCP Interface Framework
+description: Define typed Python tools once, then serve or convert them across CLI, FastAPI, and MCP interfaces.
+template: splash
+---
+
+import { Image } from 'astro:assets';
+import intpotImage from '../../assets/intpot_image.webp';
+
+<section class="framework-hero" aria-labelledby="framework-title">
+  <div class="framework-copy">
+    <p class="framework-eyebrow">TYPED PYTHON INTERFACES</p>
+    <h1 id="framework-title">One typed definition. Three interfaces.</h1>
+    <p class="framework-tagline">Define typed tools once for CLI, HTTP, or MCP. Convert apps between Typer, FastAPI, and FastMCP.</p>
+    <nav class="framework-actions" aria-label="Primary actions">
+      <a class="framework-action primary" href="/quickstart/">Quick start</a>
+      <a class="framework-action secondary" href="/playground/">Playground</a>
+      <a class="framework-action secondary" href="/project/roadmap/">Roadmap</a>
+      <a class="framework-action tertiary" href="https://github.com/tugrulguner/intpot" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a>
+    </nav>
+    <a class="creator-attribution" href="https://tugrul.modepot.io/">Created by Tugrul Guner</a>
+  </div>
+  <figure class="framework-art">
+    <Image src={intpotImage} alt="Intpot turns typed Python tools into CLI, HTTP API, or MCP interfaces." width={1200} height={900} />
+  </figure>
+</section>
+
+<section class="installation-strip" aria-label="Installation">
+  <div><p class="section-eyebrow">GET STARTED</p><h2>Install Intpot</h2></div>
+  <code>{'pip install "intpot[all]"'}</code>
+  <a href="/quickstart/">Quick start guide <span aria-hidden="true">→</span></a>
+</section>
+
+<section class="project-demo" aria-label="Project demonstration">
+  <div>
+    <p class="section-eyebrow">EXPLORE THE MECHANISM</p>
+    <h2>One definition, three ways in.</h2>
+    <p>Inspect how one typed greeting maps to CLI, HTTP, and MCP request shapes, then edit a bounded request and view its local result.</p>
+  </div>
+  <a href="/playground/">Open the playground <span aria-hidden="true">→</span></a>
+  <p class="demo-boundary"><strong>Browser-local preview.</strong> A bounded JavaScript preview—not Python execution, a live Intpot server, or a model call.</p>
+</section>
+
+## One definition, three ways to run
+
+Register typed Python functions with `@app.tool()`. Intpot keeps behavior in one place and serves it through a Typer CLI, FastAPI, or FastMCP interface. Existing apps can also be converted across all six Typer, FastAPI, and FastMCP directions.
+
+```python
+from intpot import App
+
+app = App("my-app")
+
+@app.tool()
+def add(a: int, b: int) -> int:
+    """Add two numbers."""
+    return a + b
+```
+
+```sh
+intpot serve app.py --cli
+intpot serve app.py --api
+intpot serve app.py --mcp
+```
+
+## Explore the interface playground
+
+See how one typed definition maps to CLI, HTTP, and MCP entry points. The focused playground lets you edit one bounded request at a time and inspect its locally computed result.
+
+[Open the interface playground →](/playground/) · [Read the quick start](/quickstart/) · [Explore capabilities and boundaries](/capabilities/)
+
+## Build and understand Intpot
+
+- [Build and run an app](/build-an-app/): a complete CLI and HTTP path, output verification, and troubleshooting.
+- [Convert, inspect, and eject](/conversion-boundaries/): supported framework mappings and explicit conversion limits.
+- [Schema and parameter reference](/schema-reference/): public records, defaults, commands, and dependency extras.
+- [Architecture internals](/architecture-internals/): how registration, detection, projection, and generation work.
+
+Built by [ModePot](https://modepot.io/).

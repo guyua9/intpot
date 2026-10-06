@@ -43,7 +43,7 @@ Build confidence in the current supported subset as the foundation for wider cov
 The phases below express priority, not promised release dates. Correctness and contract
 consolidation come before deeper transformations or performance infrastructure.
 
-## v0.8 — Current foundation
+## v0.9 — Current foundation
 
 - **One definition, three live interfaces:** registered Python functions can run through
   Typer, FastAPI, or FastMCP, or be ejected as framework source.
@@ -53,6 +53,9 @@ consolidation come before deeper transformations or performance infrastructure.
   support inspection and generation; `ToolInfo` compatibility views remain available.
 - **Target projections:** conversion exposes intermediate target projections before
   rendering. Some effective parameter defaults are still decided by templates.
+- **Shared interface identity:** framework-visible tool names, source Python parameter
+  bindings, target-visible parameter aliases, and FastAPI route metadata remain distinct
+  in the canonical schema and are consumed consistently by live and generated interfaces.
 - **Strict schema serialization:** supported non-JSON defaults use tagged `$intpot`
   envelopes; executable default rendering preserves supported value semantics.
 - **Basic body transforms:** supported CLI output and return conventions are translated;
@@ -71,13 +74,15 @@ different capabilities: a callable may depend on runtime values that cannot be e
 
 ## Phase 1 — Correctness and honest documentation
 
-- [ ] Preserve control flow in API/MCP-to-CLI conversion, including early returns, loop
-      returns, and unreachable side effects. Prefer retaining implementation returns and
-      letting the existing outer CLI wrapper print results over rewriting returns to echo.
-- [ ] Replace substring-based import filtering with structural binding analysis. Remove
-      imports only when their uses have actually been removed or translated.
-- [ ] Add behavioral live-versus-ejected tests for parameter placement, defaults, response
-      shapes, async behavior, errors, and naming—not only route/schema presence.
+- [x] Preserve control flow in API/MCP-to-CLI conversion, including early returns, loop
+      returns, and unreachable side effects. Implementation returns are retained and the
+      outer CLI wrapper prints their values ([#131](https://github.com/tugrulguner/intpot/pull/131)).
+- [x] Replace substring-based import filtering with structural binding analysis. Remove
+      imports only when their uses have actually been removed or translated
+      ([#132](https://github.com/tugrulguner/intpot/pull/132)).
+- [x] Add behavioral live-versus-ejected tests for parameter placement, defaults, response
+      shapes, async behavior, errors, and naming—not only route/schema presence. CLI,
+      FastAPI, and FastMCP now execute the same registered tools through both paths.
 - [ ] Align the README, architecture illustrations, cookbook, and shipped skills with the
       implementation. Distinguish `App` from `IntpotApp`, including `.project()` and `.tools`
       behavior; keep public-command guidance in parity ([#121](https://github.com/tugrulguner/intpot/issues/121)).
@@ -93,15 +98,32 @@ audit findings must be reproduced before treating their fixes as verified.
 
 ## Phase 2 — Complete the shared interface contract
 
-- [ ] Centralize target decisions for names, parameter placement, required/default rules,
-      descriptions, and response policy. Projections should expose those decisions rather
-      than leave hidden defaults to templates.
-- [ ] Reuse shared interface decisions in live builders and source renderers while keeping
-      callable bindings separate from recovered source. Do not make live serving depend
-      on every value being serializable or exportable.
-- [ ] Transform immutable schema records directly and share unchanged parameters. Keep
-      mutable `ToolInfo` adaptation at compatibility boundaries rather than repeatedly
-      thawing, deep-copying, and refreezing records during projection.
+- [x] Centralize target parameter placement for CLI, FastAPI, and FastMCP in an immutable
+      schema projection. CLI and FastAPI renderers consume the choice; FastMCP records its
+      single native parameter placement without adding a redundant adapter.
+- [x] Preserve framework-visible tool names separately from sanitized Python bindings and
+      make default API routes explicit in the target projection. Live and generated CLI,
+      FastAPI, and FastMCP interfaces consume the shared name policy.
+- [x] Preserve valid source callable parameter bindings separately from canonical sanitized
+      names so generated CLI, FastAPI, and FastMCP bodies execute after sanitization and
+      deterministic collision suffixing.
+- [x] Preserve FastAPI route identity and documentation metadata — explicit operation IDs,
+      route names, summaries, descriptions, tags, and deprecation state — in the canonical
+      schema and both live and generated FastAPI applications.
+- [x] Preserve target-visible parameter aliases separately from canonical and source binding
+      names. FastAPI aliases and exact Typer option declarations, including short and
+      paired boolean flags, survive live and generated interfaces and cross-target
+      conversion.
+- [ ] Centralize the remaining target decisions for required/default rules, descriptions,
+      and response policy. Canonical schema values remain authoritative, but the focused
+      name and alias slices do not unify those policies.
+- [x] Reuse the parameter-placement resolver where live CLI and FastAPI builders choose a
+      location, without requiring live serving to construct an `ApplicationSchema`;
+      runtime-only opaque defaults remain usable. FastMCP has no competing location choice.
+- [x] Transform this focused projection with `dataclasses.replace` and share unchanged
+      parameters and tools. Mutable `ToolInfo` remains a compatibility boundary.
+- [ ] Extend the same shared immutable boundary to the remaining interface and response
+      decisions without changing established response policy in the placement slice.
 - [ ] Isolate existing default-value freezing, serialization, identity, and source-rendering
       behavior behind a small private module. Preserve supported values and regression
       coverage; do not replace these contracts with generic `repr()` or JSON conversion.

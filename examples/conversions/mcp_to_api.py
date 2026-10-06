@@ -4,30 +4,62 @@
 from fastapi import FastAPI as _intpot_fastapi_FastAPI, Body as _intpot_fastapi_Body
 
 app = _intpot_fastapi_FastAPI(title='example-server')
+_intpot_required = object()
 
 
-@app.post("/add")
+def _add_impl(
+    a: int = _intpot_required,
+    b: int = _intpot_required,
+) -> dict:
+    """Add two numbers together."""
+    if a is _intpot_required:
+        raise TypeError('Missing required argument: a')
+    if b is _intpot_required:
+        raise TypeError('Missing required argument: b')
+    return {'result': a + b}
+
+
+@app.post(
+    '/add',
+    name='add',
+    summary='Add two numbers together.',
+    description='Add two numbers together.',
+)
 def add(
     a: int = _intpot_fastapi_Body(...),
     b: int = _intpot_fastapi_Body(...),
 ) -> dict:
     """Add two numbers together."""
 
-    return {'result': a + b}
+    return _add_impl(a, b)
+
+def _greet_impl(
+    name: str = _intpot_required,
+    greeting: str = 'Hello',
+) -> dict:
+    """Greet someone by name."""
+    if name is _intpot_required:
+        raise TypeError('Missing required argument: name')
+    return {'result': f'{greeting}, {name}!'}
 
 
-@app.post("/greet")
+@app.post(
+    '/greet',
+    name='greet',
+    summary='Greet someone by name.',
+    description='Greet someone by name.',
+)
 def greet(
     name: str = _intpot_fastapi_Body(...),
     greeting: str = _intpot_fastapi_Body(default='Hello'),
 ) -> dict:
     """Greet someone by name."""
 
-    return {'result': f'{greeting}, {name}!'}
+    return _greet_impl(name, greeting)
 
 
 if __name__ == "__main__":
-    import uvicorn
+    import uvicorn as _intpot_api_uvicorn
 
     # Loopback only. Change to "0.0.0.0" to expose this on the network.
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    _intpot_api_uvicorn.run(app, host="127.0.0.1", port=8000)

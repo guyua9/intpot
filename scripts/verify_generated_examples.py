@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 from pathlib import Path
 from types import ModuleType
 
@@ -27,10 +28,19 @@ def verify_generated_cli() -> None:
         "intpot_generated_advanced_cli",
         ROOT / "examples" / "conversions" / "advanced_api_to_cli.py",
     )
-    result = CliRunner().invoke(module.app, ["get-user", "7"])
+    result = CliRunner().invoke(module.app, ["get_user", "7"])
     assert result.exit_code == 0, result.exception
     assert result.stdout == (
         "{'user_id': '7', 'username': 'example', 'role': 'member'}\n"
+    )
+    created = CliRunner().invoke(
+        module.app,
+        ["create_user", "ada", "ada@example.com"],
+    )
+    assert created.exit_code == 0, created.exception
+    assert created.stdout == (
+        "{'username': 'ada', 'email': 'ada@example.com', 'role': 'member', "
+        "'created': True, 'status': 201}\n"
     )
     print("verified generated CLI command")
 
@@ -47,6 +57,20 @@ def verify_generated_mcp() -> None:
         "username": "example",
         "role": "member",
     }
+    created = asyncio.run(
+        module.mcp.call_tool(
+            "create_user",
+            {"username": "ada", "email": "ada@example.com"},
+        )
+    )
+    assert created.is_error is False
+    assert created.structured_content == {
+        "username": "ada",
+        "email": "ada@example.com",
+        "role": "member",
+        "created": True,
+        "status": 201,
+    }
     print("verified generated MCP tool")
 
 
@@ -59,6 +83,29 @@ def verify_dependency_api() -> None:
     assert response.status_code == 200
     assert response.json() == {"username": "example", "role": "member"}
     print("verified dependency FastAPI route")
+
+
+def verify_generated_cli_to_api() -> None:
+    basic = _load_module(
+        "intpot_generated_cli_to_api",
+        ROOT / "examples" / "conversions" / "cli_to_api.py",
+    )
+    greeted = TestClient(basic.app).post(
+        "/greet", json={"name": "Ada", "greeting": "Hi"}
+    )
+    assert greeted.status_code == 200, greeted.text
+    assert greeted.json() == {"result": "Hi, Ada!"}
+
+    advanced = _load_module(
+        "intpot_generated_advanced_cli_to_api",
+        ROOT / "examples" / "conversions" / "advanced_cli_to_api.py",
+    )
+    searched = TestClient(advanced.app).post(
+        "/search", json={"query": "alias", "include-done": True}
+    )
+    assert searched.status_code == 200, searched.text
+    assert len(json.loads(searched.json()["result"])) == 2
+    print("verified generated CLI-to-API parameter aliases")
 
 
 def verify_semantic_schema() -> None:
@@ -82,6 +129,7 @@ def main() -> None:
     verify_generated_cli()
     verify_generated_mcp()
     verify_dependency_api()
+    verify_generated_cli_to_api()
     verify_semantic_schema()
 
 

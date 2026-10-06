@@ -16,7 +16,7 @@ from decimal import Decimal
 from enum import Enum
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
 
@@ -683,16 +683,74 @@ class ParamSource(str, Enum):
         }[self]
 
 
+class ParameterPlacement(str, Enum):
+    """Explicit target-framework placement for one parameter."""
+
+    CLI_ARGUMENT = "cli_argument"
+    CLI_OPTION = "cli_option"
+    API_BODY = "api_body"
+    API_QUERY = "api_query"
+    API_HEADER = "api_header"
+    API_PATH = "api_path"
+    MCP_PARAMETER = "mcp_parameter"
+
+    @property
+    def fastapi_class(self) -> str:
+        """Return the FastAPI marker represented by an API placement."""
+        return {
+            ParameterPlacement.API_BODY: "Body",
+            ParameterPlacement.API_QUERY: "Query",
+            ParameterPlacement.API_HEADER: "Header",
+            ParameterPlacement.API_PATH: "Path",
+        }[self]
+
+
+def _validate_binding_name(name: str) -> None:
+    """Reject names that cannot be emitted as Python parameters."""
+    if not name.isidentifier() or keyword.iskeyword(name):
+        raise ValueError(f"Invalid Python parameter binding name: {name!r}")
+
+
+def _allocate_identifier(name: str, occupied: set[str]) -> str:
+    """Allocate a unique identifier without changing its valid base spelling."""
+    candidate = name
+    counter = 2
+    while candidate in occupied:
+        candidate = f"{name}_{counter}"
+        counter += 1
+    occupied.add(candidate)
+    return candidate
+
+
 @dataclass
 class ParameterInfo:
+    _source_binding_name: ClassVar[str | None] = None
+
     name: str
     type_annotation: str = "str"
     default: Any = _SENTINEL  # _SENTINEL means required (no default)
     description: str = ""
     param_source: ParamSource | None = None
+    placement: ParameterPlacement | None = None
+    binding_name: str | None = None
+    interface_name: str | None = None
+    aliases: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.name = sanitize_identifier(self.name)
+        source_name = self.name
+        if self.binding_name is not None:
+            _validate_binding_name(self.binding_name)
+            self._source_binding_name = self.binding_name
+        elif source_name.isidentifier() and not keyword.iskeyword(source_name):
+            self._source_binding_name = source_name
+        self.name = sanitize_identifier(source_name)
+        if (
+            self.binding_name is None
+            and source_name != self.name
+            and source_name.isidentifier()
+            and not keyword.iskeyword(source_name)
+        ):
+            self.binding_name = source_name
 
     @property
     def required(self) -> bool:
@@ -713,7 +771,7 @@ def deduplicate_identifiers(names: list[str]) -> list[str]:
         candidate = name
         counter = 2
         while candidate in seen:
-            candidate = f"{name}_{counter}"
+            candidate = sanitize_identifier(f"{name}_{counter}")
             counter += 1
         seen.add(candidate)
         result.append(candidate)
@@ -732,13 +790,36 @@ class ToolInfo:
     route_path: str | None = None
     dependencies: list[str] = field(default_factory=list)
     source_imports: list[str] = field(default_factory=list)
+    interface_name: str | None = None
+    operation_id: str | None = None
+    route_summary: str | None = None
+    route_description: str | None = None
+    route_tags: list[str] = field(default_factory=list)
+    route_deprecated: bool | None = None
 
     def __post_init__(self) -> None:
-        self.name = sanitize_identifier(self.name)
+        canonical_name = sanitize_identifier(self.name)
+        if self.interface_name is None and canonical_name != self.name:
+            self.interface_name = self.name
+        self.name = canonical_name
         # Parameter names are sanitised individually, so two distinct source
         # names can arrive here already collapsed onto one identifier.
         unique = deduplicate_identifiers([p.name for p in self.parameters])
-        for param, name in zip(self.parameters, unique, strict=True):
+        source_bindings: list[str | None] = []
+        occupied: set[str] = set()
+        for param in self.parameters:
+            source_binding = param._source_binding_name
+            if source_binding in occupied:
+                source_binding = None
+            if source_binding is not None:
+                occupied.add(source_binding)
+            source_bindings.append(source_binding)
+
+        for param, name, source_binding in zip(
+            self.parameters, unique, source_bindings, strict=True
+        ):
+            binding_name = source_binding or _allocate_identifier(name, occupied)
+            param.binding_name = binding_name if binding_name != name else None
             param.name = name
 
 
@@ -751,10 +832,26 @@ class ParameterSchema:
     default: Any = _SENTINEL
     description: str = ""
     param_source: ParamSource | None = None
+    placement: ParameterPlacement | None = None
+    binding_name: str | None = None
+    interface_name: str | None = None
+    aliases: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "name", sanitize_identifier(self.name))
+        source_name = self.name
+        canonical_name = sanitize_identifier(source_name)
+        if self.binding_name is not None:
+            _validate_binding_name(self.binding_name)
+        if (
+            self.binding_name is None
+            and source_name != canonical_name
+            and source_name.isidentifier()
+            and not keyword.iskeyword(source_name)
+        ):
+            object.__setattr__(self, "binding_name", source_name)
+        object.__setattr__(self, "name", canonical_name)
         object.__setattr__(self, "default", _freeze_default(self.default))
+        object.__setattr__(self, "aliases", tuple(self.aliases))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ParameterSchema):
@@ -765,12 +862,20 @@ class ParameterSchema:
             _default_identity(self.default),
             self.description,
             self.param_source,
+            self.placement,
+            self.binding_name,
+            self.interface_name,
+            self.aliases,
         ) == (
             other.name,
             other.type_annotation,
             _default_identity(other.default),
             other.description,
             other.param_source,
+            other.placement,
+            other.binding_name,
+            other.interface_name,
+            other.aliases,
         )
 
     def __hash__(self) -> int:
@@ -781,6 +886,10 @@ class ParameterSchema:
                 _default_identity(self.default),
                 self.description,
                 self.param_source,
+                self.placement,
+                self.binding_name,
+                self.interface_name,
+                self.aliases,
             )
         )
 
@@ -792,6 +901,10 @@ class ParameterSchema:
             default=_freeze_default(parameter.default),
             description=parameter.description,
             param_source=parameter.param_source,
+            placement=parameter.placement,
+            binding_name=parameter.binding_name,
+            interface_name=parameter.interface_name,
+            aliases=tuple(parameter.aliases),
         )
 
     @property
@@ -806,20 +919,30 @@ class ParameterSchema:
             default=_thaw_default(self.default),
             description=self.description,
             param_source=self.param_source,
+            placement=self.placement,
+            binding_name=self.binding_name,
+            interface_name=self.interface_name,
+            aliases=list(self.aliases),
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a sentinel-free representation suitable for JSON encoding."""
-        result: dict[str, Any] = {
+        data: dict[str, Any] = {
             "name": self.name,
             "type_annotation": self.type_annotation,
             "description": self.description,
             "param_source": self.param_source.value if self.param_source else None,
+            "placement": self.placement.value if self.placement else None,
+            "binding_name": self.binding_name,
             "required": self.required,
         }
+        if self.interface_name is not None:
+            data["interface_name"] = self.interface_name
+        if self.aliases:
+            data["aliases"] = list(self.aliases)
         if not self.required:
-            result["default"] = _json_default(self.default)
-        return result
+            data["default"] = _json_default(self.default)
+        return data
 
 
 @dataclass(frozen=True, slots=True)
@@ -836,10 +959,35 @@ class ToolSchema:
     route_path: str | None = None
     dependencies: tuple[str, ...] = ()
     source_imports: tuple[str, ...] = ()
+    interface_name: str | None = None
+    operation_id: str | None = None
+    route_summary: str | None = None
+    route_description: str | None = None
+    route_tags: tuple[str, ...] = ()
+    route_deprecated: bool | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "name", sanitize_identifier(self.name))
-        object.__setattr__(self, "parameters", tuple(self.parameters))
+        canonical_name = sanitize_identifier(self.name)
+        if self.interface_name is None and canonical_name != self.name:
+            object.__setattr__(self, "interface_name", self.name)
+        object.__setattr__(self, "name", canonical_name)
+        parameters = tuple(self.parameters)
+        public_names = [parameter.name for parameter in parameters]
+        private_names = [
+            parameter.binding_name or parameter.name for parameter in parameters
+        ]
+        if deduplicate_identifiers(public_names) != public_names or len(
+            set(private_names)
+        ) != len(private_names):
+            normalized = ToolInfo(
+                name=canonical_name,
+                parameters=[parameter.to_info() for parameter in parameters],
+            ).parameters
+            parameters = tuple(
+                ParameterSchema.from_info(parameter) for parameter in normalized
+            )
+        object.__setattr__(self, "parameters", parameters)
+        object.__setattr__(self, "route_tags", tuple(self.route_tags))
         object.__setattr__(self, "dependencies", tuple(self.dependencies))
         object.__setattr__(self, "source_imports", tuple(self.source_imports))
 
@@ -854,8 +1002,14 @@ class ToolSchema:
             function_body=tool.function_body,
             is_async=tool.is_async,
             route_path=tool.route_path,
+            operation_id=tool.operation_id,
+            route_summary=tool.route_summary,
+            route_description=tool.route_description,
+            route_tags=tuple(tool.route_tags),
+            route_deprecated=tool.route_deprecated,
             dependencies=tuple(tool.dependencies),
             source_imports=tuple(tool.source_imports),
+            interface_name=tool.interface_name,
         )
 
     def to_info(self) -> ToolInfo:
@@ -869,8 +1023,14 @@ class ToolSchema:
             function_body=self.function_body,
             is_async=self.is_async,
             route_path=self.route_path,
+            operation_id=self.operation_id,
+            route_summary=self.route_summary,
+            route_description=self.route_description,
+            route_tags=list(self.route_tags),
+            route_deprecated=self.route_deprecated,
             dependencies=list(self.dependencies),
             source_imports=list(self.source_imports),
+            interface_name=self.interface_name,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -884,8 +1044,14 @@ class ToolSchema:
             "function_body": self.function_body,
             "is_async": self.is_async,
             "route_path": self.route_path,
+            "operation_id": self.operation_id,
+            "route_summary": self.route_summary,
+            "route_description": self.route_description,
+            "route_tags": list(self.route_tags),
+            "route_deprecated": self.route_deprecated,
             "dependencies": list(self.dependencies),
             "source_imports": list(self.source_imports),
+            "interface_name": self.interface_name,
         }
 
 

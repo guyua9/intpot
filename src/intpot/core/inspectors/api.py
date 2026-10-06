@@ -6,7 +6,8 @@ import asyncio
 import inspect
 import re
 from collections.abc import Iterable, Iterator
-from typing import Any, cast
+from enum import Enum
+from typing import Annotated, Any, cast, get_args, get_origin
 
 from intpot.core.inspectors._utils import (
     extract_function_body,
@@ -42,9 +43,40 @@ def _get_param_source(obj: Any) -> ParamSource | None:
     return mapping.get(cls_name)
 
 
+def _get_annotation_marker(annotation: Any) -> Any | None:
+    """Return FastAPI parameter metadata from an ``Annotated`` annotation."""
+    if get_origin(annotation) is not Annotated:
+        return None
+    return next(
+        (
+            metadata
+            for metadata in get_args(annotation)[1:]
+            if _get_param_source(metadata) is not None
+        ),
+        None,
+    )
+
+
 def _is_normalized_api_route(route: Any) -> bool:
     """Recognize the FastAPI route shape consumed by this inspector."""
     return all(hasattr(route, attr) for attr in ("endpoint", "dependant", "methods"))
+
+
+def _route_tag_name(tag: Any) -> str:
+    """Normalize FastAPI's string-or-Enum tag contract for standalone source."""
+    value = tag.value if isinstance(tag, Enum) else tag
+    return value if isinstance(value, str) else str(value)
+
+
+def _effective_route_summary(route: Any, interface_name: str) -> str:
+    """Match FastAPI's OpenAPI summary when the route leaves it unset."""
+    summary = getattr(route, "summary", None)
+    route_name = getattr(route, "name", None)
+    if summary:
+        return summary
+    if route_name is not None:
+        return route_name.replace("_", " ").title()
+    return interface_name.replace("_", " ").title()
 
 
 def _iter_api_routes(app: Any) -> Iterator[Any]:
@@ -107,6 +139,8 @@ class APIInspector(BaseInspector):
             # `root` — i.e. the usual handler for `/`.
             endpoint = route.endpoint
             name = endpoint.__name__
+            route_name = getattr(route, "name", None)
+            interface_name = name if route_name is None else route_name
 
             description = endpoint.__doc__ or ""
             description = description.strip()
@@ -137,13 +171,32 @@ class APIInspector(BaseInspector):
                 for dependency in route.dependant.dependencies
                 if dependency.name is not None
             }
+            normalized_fields = {
+                field.name: field
+                for collection_name in (
+                    "path_params",
+                    "query_params",
+                    "header_params",
+                    "body_params",
+                )
+                for field in getattr(route.dependant, collection_name, ())
+            }
             for param_name, param in sig.parameters.items():
                 # FastAPI's dependant graph normalizes default Depends,
                 # Annotated Depends, Security, and nested dependencies.
                 if param_name in dependency_params:
                     continue
 
-                annotation = type_hints.get(param_name, param.annotation)
+                declared_annotation = type_hints.get(param_name, param.annotation)
+                annotation_marker = _get_annotation_marker(declared_annotation)
+                normalized_field = normalized_fields.get(param_name)
+                field_info = getattr(normalized_field, "field_info", None)
+                normalized_annotation = getattr(field_info, "annotation", None)
+                annotation = (
+                    normalized_annotation
+                    if normalized_annotation is not None
+                    else declared_annotation
+                )
                 type_str = python_type_name(annotation)
 
                 default = _SENTINEL
@@ -158,12 +211,15 @@ class APIInspector(BaseInspector):
                         default = raw_default
 
                 desc = ""
+                field_description = getattr(field_info, "description", None)
                 if (
                     param.default is not inspect.Parameter.empty
                     and hasattr(param.default, "description")
                     and param.default.description
                 ):
                     desc = param.default.description
+                elif isinstance(field_description, str):
+                    desc = field_description
 
                 # Mark path parameters in description
                 if param_name in path_params and not desc:
@@ -172,10 +228,18 @@ class APIInspector(BaseInspector):
                 param_source = None
                 if param.default is not inspect.Parameter.empty:
                     param_source = _get_param_source(param.default)
+                if param_source is None and annotation_marker is not None:
+                    param_source = _get_param_source(annotation_marker)
+                if param_source is None and field_info is not None:
+                    param_source = _get_param_source(field_info)
 
                 # Fall back to the path if name is in path params and no FastAPI annotation
                 if param_source is None and param_name in path_params:
                     param_source = ParamSource.path
+
+                parameter_interface_name = getattr(normalized_field, "alias", None)
+                if parameter_interface_name == param_name:
+                    parameter_interface_name = None
 
                 params.append(
                     ParameterInfo(
@@ -184,6 +248,11 @@ class APIInspector(BaseInspector):
                         default=default,
                         description=desc,
                         param_source=param_source,
+                        interface_name=(
+                            parameter_interface_name
+                            if isinstance(parameter_interface_name, str)
+                            else None
+                        ),
                     )
                 )
 
@@ -193,6 +262,7 @@ class APIInspector(BaseInspector):
             tools.append(
                 ToolInfo(
                     name=name,
+                    interface_name=interface_name,
                     description=description,
                     parameters=params,
                     return_type=return_type,
@@ -201,6 +271,14 @@ class APIInspector(BaseInspector):
                     source_imports=extract_source_imports(endpoint),
                     is_async=asyncio.iscoroutinefunction(endpoint),
                     route_path=route_path,
+                    operation_id=getattr(route, "operation_id", None),
+                    route_summary=_effective_route_summary(route, interface_name),
+                    route_description=getattr(route, "description", None),
+                    route_tags=[
+                        _route_tag_name(tag)
+                        for tag in (getattr(route, "tags", None) or ())
+                    ],
+                    route_deprecated=getattr(route, "deprecated", None),
                     dependencies=dependencies,
                 )
             )

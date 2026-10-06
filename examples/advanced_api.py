@@ -3,7 +3,7 @@
 import json
 from typing import Optional
 
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, status
 
 app = FastAPI()
 
@@ -15,13 +15,21 @@ def create_user(
     role: str = Body("member", description="User role"),
 ) -> dict:
     """Create a new user account."""
-    return {"username": username, "email": email, "role": role, "created": True}
+    return {
+        "username": username,
+        "email": email,
+        "role": role,
+        "created": True,
+        "status": status.HTTP_201_CREATED,
+    }
 
 
 @app.get("/users/{user_id}")
 def get_user(user_id: str) -> dict:
     """Retrieve a user by their ID."""
-    return {"user_id": user_id, "username": "example", "role": "member"}
+    if user_id:
+        return {"user_id": user_id, "username": "example", "role": "member"}
+    raise ValueError("user_id is required")
 
 
 @app.put("/users/{user_id}")

@@ -22,7 +22,9 @@ from intpot.core.models import (
     ParameterInfo,
     SourceType,
     ToolInfo,
+    sanitize_identifier,
 )
+from intpot.core.transforms import bind_global_name
 
 
 @dataclass
@@ -53,6 +55,10 @@ def _copy_tool_info(info: ToolInfo) -> ToolInfo:
                 default=_copy_compatibility_default(parameter.default),
                 description=parameter.description,
                 param_source=parameter.param_source,
+                placement=parameter.placement,
+                binding_name=parameter.binding_name,
+                interface_name=parameter.interface_name,
+                aliases=list(parameter.aliases),
             )
             for parameter in info.parameters
         ],
@@ -61,8 +67,14 @@ def _copy_tool_info(info: ToolInfo) -> ToolInfo:
         function_body=info.function_body,
         is_async=info.is_async,
         route_path=info.route_path,
+        operation_id=info.operation_id,
+        route_summary=info.route_summary,
+        route_description=info.route_description,
+        route_tags=list(info.route_tags),
+        route_deprecated=info.route_deprecated,
         dependencies=list(info.dependencies),
         source_imports=list(info.source_imports),
+        interface_name=info.interface_name,
     )
 
 
@@ -220,7 +232,8 @@ def _build_tool_info(
     description_override: str | None = None,
 ) -> ToolInfo:
     """Build a ToolInfo from a plain Python function."""
-    tool_name = name_override or func.__name__
+    interface_name = name_override or func.__name__
+    tool_name = sanitize_identifier(interface_name)
     description = (
         description_override
         if description_override is not None
@@ -276,10 +289,19 @@ def _build_tool_info(
 
     # Extract function body and imports for eject
     function_body = extract_function_body(func)
+    if function_body:
+        function_body = bind_global_name(
+            function_body,
+            tuple(sig.parameters),
+            func.__name__,
+            tool_name,
+            is_async=is_async,
+        )
     source_imports = extract_source_imports(func)
 
     return ToolInfo(
         name=tool_name,
+        interface_name=interface_name,
         description=description,
         parameters=parameters,
         return_type=return_type,

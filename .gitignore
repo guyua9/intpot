@@ -1,3 +1,11 @@
+# Website build artifacts
+website/node_modules/
+website/.astro/
+website/dist/
+website/test-results/
+website/evidence/
+website/playwright-report/
+
 # Python
 __pycache__/
 *.py[cod]

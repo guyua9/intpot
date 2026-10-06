@@ -10,33 +10,60 @@ from typing import {{ typing_imports | join(", ") }}
 {%- set ns = namespace(imports=[]) %}
 {%- for tool in tools %}
   {%- for param in tool.parameters %}
-    {%- if param.param_source %}
-      {%- set src = param.param_source.fastapi_class %}
-      {%- if src not in ns.imports %}
-        {%- set ns.imports = ns.imports + [src] %}
-      {%- endif %}
-    {%- elif "Body" not in ns.imports %}
-      {%- set ns.imports = ns.imports + ["Body"] %}
+    {%- set src = param.placement.fastapi_class %}
+    {%- if src not in ns.imports %}
+      {%- set ns.imports = ns.imports + [src] %}
     {%- endif %}
   {%- endfor %}
 {%- endfor %}
 from fastapi import FastAPI as {{ "FastAPI" | fastapi_alias }}{% for imp in ns.imports | sort %}, {{ imp }} as {{ imp | fastapi_alias }}{% endfor %}
 
 app = {{ "FastAPI" | fastapi_alias }}(title={{ app_name | repr }})
+{%- set has_implementation = tools | selectattr("function_body") | list %}
+{% if has_implementation %}{{ generated_aliases["helper:required"] }} = object()
+{% endif %}
 {% for tool in tools %}
+{%- if tool.function_body %}
+
+{% if tool.is_async %}async {% endif %}def {{ generated_aliases["impl:" ~ tool.name] }}(
+{%- for param in tool.parameters %}
+    {{ param.binding_name or param.name }}: {{ param.type_annotation }} = {% if param.required %}{{ generated_aliases["helper:required"] }}{% else %}{{ param.default | source_default }}{% endif %},
+{%- endfor %}
+) -> {{ tool.return_type }}:
+    """{{ tool.description | escape_doc }}"""
+{%- for param in tool.parameters if param.required %}
+    if {{ param.binding_name or param.name }} is {{ generated_aliases["helper:required"] }}:
+        raise TypeError({{ ("Missing required argument: " ~ (param.binding_name or param.name)) | repr }})
+{%- endfor %}
+    {{ tool.function_body | bind_tool_name(tool, generated_aliases["impl:" ~ tool.name], true) | indent(4) }}
+{%- endif %}
 
 
 {% if tool.dependencies -%}
 # NOTE: Original used dependency injection: {{ tool.dependencies | join(", ") }}
 {% endif -%}
-@app.{{ tool.http_method | lower }}("{{ tool.route_path or '/' + tool.name }}")
+@app.{{ tool.http_method | http_method }}(
+    {{ (tool.route_path or '/' + tool.interface_name) | repr }},
+    name={{ tool.interface_name | repr }},
+{%- if tool.operation_id is not none %}
+    operation_id={{ tool.operation_id | repr }},
+{%- endif %}
+    summary={{ (tool.route_summary if tool.route_summary is not none else tool.description) | repr }},
+    description={{ (tool.route_description if tool.route_description is not none else tool.description) | repr }},
+{%- if tool.route_tags %}
+    tags={{ tool.route_tags | list | repr }},
+{%- endif %}
+{%- if tool.route_deprecated is not none %}
+    deprecated={{ tool.route_deprecated | repr }},
+{%- endif %}
+)
 {% if tool.is_async %}async {% endif %}def {{ tool.name }}(
 {%- if tool.parameters %}
 {%- for param in tool.parameters %}
     {{ param.name }}: {{ param.type_annotation }}
-{%- set fa_type = (param.param_source.fastapi_class | fastapi_alias) if param.param_source else ("Body" | fastapi_alias) %}
-{%- if not param.required %} = {{ fa_type }}(default={{ param.default | source_default }}{% if param.description %}, description={{ param.description | repr }}{% endif %})
-{%- else %} = {{ fa_type }}(...{% if param.description %}, description={{ param.description | repr }}{% endif %})
+{%- set fa_type = param.placement.fastapi_class | fastapi_alias %}
+{%- if not param.required %} = {{ fa_type }}(default={{ param.default | source_default }}{% if param.description %}, description={{ param.description | repr }}{% endif %}{% if param.interface_name is not none %}, alias={{ param.interface_name | repr }}{% endif %})
+{%- else %} = {{ fa_type }}(...{% if param.description %}, description={{ param.description | repr }}{% endif %}{% if param.interface_name is not none %}, alias={{ param.interface_name | repr }}{% endif %})
 {%- endif %},
 {%- endfor %}
 {% endif -%}
@@ -45,7 +72,7 @@ app = {{ "FastAPI" | fastapi_alias }}(title={{ app_name | repr }})
     """{{ tool.description | escape_doc }}"""
 {%- endif %}
 {% if tool.function_body %}
-    {{ tool.function_body | indent(4) }}
+    return {% if tool.is_async %}await {% endif %}{{ generated_aliases["impl:" ~ tool.name] }}({{ tool.parameters | map(attribute="name") | join(", ") }})
 {%- else %}
     # TODO: implement
     return {"result": "{{ tool.name }} called"}
@@ -54,7 +81,7 @@ app = {{ "FastAPI" | fastapi_alias }}(title={{ app_name | repr }})
 
 
 if __name__ == "__main__":
-    import uvicorn
+    import uvicorn as {{ generated_aliases["api:uvicorn"] }}
 
     # Loopback only. Change to "0.0.0.0" to expose this on the network.
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    {{ generated_aliases["api:uvicorn"] }}.run(app, host="127.0.0.1", port=8000)

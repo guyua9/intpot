@@ -5,7 +5,19 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from intpot.core.models import ParamSource, ToolInfo
+from intpot.core.models import (
+    ParameterInfo,
+    ParameterPlacement,
+    SourceType,
+    ToolInfo,
+    deduplicate_identifiers,
+    sanitize_identifier,
+)
+from intpot.core.projections import (
+    resolve_cli_aliases,
+    resolve_parameter_placement,
+    resolve_tool_interface_name,
+)
 
 if TYPE_CHECKING:
     import typer as _typer
@@ -17,8 +29,45 @@ _HTTP_METHODS = frozenset(
 )
 
 
-def _restore_positional_only(func: Callable[..., Any]) -> Callable[..., Any]:
-    """Expose positional-only parameters by name, then restore them on invocation."""
+def _parameter_contracts(
+    func: Callable[..., Any], info: ToolInfo
+) -> dict[str, ParameterInfo]:
+    """Map callable names to canonical metadata without assuming equal spelling.
+
+    ``ParameterInfo`` sanitizes and deduplicates names, while the live callable
+    retains its original Python signature. Rebuilding that canonical identity
+    map keeps colliding source names distinct without relying on metadata order.
+    """
+    import inspect
+
+    variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    callable_parameters = [
+        parameter
+        for parameter in inspect.signature(func).parameters.values()
+        if parameter.kind not in variadic
+    ]
+    canonical_names = deduplicate_identifiers(
+        [sanitize_identifier(parameter.name) for parameter in callable_parameters]
+    )
+    contracts_by_name = {parameter.name: parameter for parameter in info.parameters}
+    if len(contracts_by_name) != len(info.parameters) or set(canonical_names) != set(
+        contracts_by_name
+    ):
+        raise ValueError(
+            f"Tool {info.name!r} callable parameters do not match its parameter contracts"
+        )
+    return {
+        parameter.name: contracts_by_name[canonical_name]
+        for parameter, canonical_name in zip(
+            callable_parameters, canonical_names, strict=True
+        )
+    }
+
+
+def _restore_positional_only(
+    func: Callable[..., Any], info: ToolInfo | None = None
+) -> Callable[..., Any]:
+    """Expose the canonical parameter contract while restoring positional calls."""
     import functools
     import inspect
 
@@ -28,7 +77,17 @@ def _restore_positional_only(func: Callable[..., Any]) -> Callable[..., Any]:
         for param in signature.parameters.values()
         if param.kind == inspect.Parameter.POSITIONAL_ONLY
     )
-    if not positional_only:
+    contracts = {} if info is None else _parameter_contracts(func, info)
+    canonical_strings = {
+        name
+        for name, parameter in contracts.items()
+        if parameter.type_annotation == "str"
+    }
+    needs_annotations = any(
+        param.annotation is inspect.Parameter.empty and param.name in canonical_strings
+        for param in signature.parameters.values()
+    )
+    if not positional_only and not needs_annotations:
         return func
 
     def call_arguments(
@@ -58,14 +117,34 @@ def _restore_positional_only(func: Callable[..., Any]) -> Callable[..., Any]:
 
         wrapper = _sync_wrapper
 
-    wrapper.__signature__ = signature.replace(  # type: ignore[attr-defined]
+    exposed_signature = signature.replace(
         parameters=[
-            param.replace(kind=inspect.Parameter.POSITIONAL_OR_KEYWORD)
-            if param.kind == inspect.Parameter.POSITIONAL_ONLY
-            else param
+            param.replace(
+                kind=(
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD
+                    if param.kind == inspect.Parameter.POSITIONAL_ONLY
+                    else param.kind
+                ),
+                annotation=(
+                    str
+                    if param.annotation is inspect.Parameter.empty
+                    and param.name in canonical_strings
+                    else param.annotation
+                ),
+            )
             for param in signature.parameters.values()
         ]
     )
+    wrapper.__signature__ = exposed_signature  # type: ignore[attr-defined]
+    if needs_annotations:
+        wrapper.__annotations__ = dict(wrapper.__annotations__)
+        for parameter in exposed_signature.parameters.values():
+            original = signature.parameters[parameter.name]
+            if (
+                original.annotation is inspect.Parameter.empty
+                and parameter.annotation is not inspect.Parameter.empty
+            ):
+                wrapper.__annotations__[parameter.name] = parameter.annotation
     return wrapper
 
 
@@ -76,6 +155,36 @@ def build_typer_app(name: str, tools: list[RegisteredTool]) -> _typer.Typer:
     import inspect
 
     import typer
+
+    def _command_endpoint(
+        func: Callable[..., Any], info: ToolInfo
+    ) -> Callable[..., Any]:
+        restored = _restore_positional_only(func, info)
+
+        @functools.wraps(restored)
+        def endpoint(*args: Any, **kwargs: Any) -> Any:
+            return restored(*args, **kwargs)
+
+        signature = inspect.signature(restored)
+        contracts = _parameter_contracts(restored, info)
+        parameters = []
+        for parameter in signature.parameters.values():
+            contract = contracts[parameter.name]
+            placement = resolve_parameter_placement(contract, SourceType.CLI)
+            if placement is ParameterPlacement.CLI_ARGUMENT:
+                default = typer.Argument(..., help=contract.description)
+            else:
+                option_default = ... if contract.required else contract.default
+                default = typer.Option(
+                    option_default,
+                    *resolve_cli_aliases(contract),
+                    help=contract.description,
+                )
+            parameters.append(parameter.replace(default=default))
+        endpoint.__signature__ = signature.replace(  # type: ignore[attr-defined]
+            parameters=parameters
+        )
+        return endpoint
 
     def _echoing(fn: Callable[..., Any]) -> Callable[..., None]:
         """Print what the tool returns; Typer discards return values.
@@ -98,8 +207,11 @@ def build_typer_app(name: str, tools: list[RegisteredTool]) -> _typer.Typer:
 
     cli_app = typer.Typer(name=name, help=f"{name} — powered by intpot")
     for tool in tools:
-        wrapped = _echoing(_restore_positional_only(tool.func))
-        cli_app.command(name=tool.info.name, help=tool.info.description)(wrapped)
+        wrapped = _echoing(_command_endpoint(tool.func, tool.info))
+        cli_app.command(
+            name=resolve_tool_interface_name(tool.info, SourceType.CLI),
+            help=tool.info.description,
+        )(wrapped)
     return cli_app
 
 
@@ -119,12 +231,17 @@ def _fastapi_endpoint(func: Callable[..., Any], info: ToolInfo) -> Callable[...,
     from fastapi import Body, Header, Path, Query
 
     markers = {
-        ParamSource.body: Body,
-        ParamSource.query: Query,
-        ParamSource.header: Header,
-        ParamSource.path: Path,
+        ParameterPlacement.API_BODY: Body,
+        ParameterPlacement.API_QUERY: Query,
+        ParameterPlacement.API_HEADER: Header,
+        ParameterPlacement.API_PATH: Path,
     }
-    sources = {p.name: p.param_source for p in info.parameters}
+    contracts = _parameter_contracts(func, info)
+    canonical_strings = {
+        name
+        for name, parameter in contracts.items()
+        if parameter.type_annotation == "str"
+    }
 
     try:
         hints = get_type_hints(func)
@@ -156,17 +273,30 @@ def _fastapi_endpoint(func: Callable[..., Any], info: ToolInfo) -> Callable[...,
             # what an empty tuple and dict amount to anyway; rewriting them to
             # KEYWORD_ONLY produced a signature FastAPI could not serve.
             continue
-        marker = markers[sources.get(param_name) or ParamSource.body]
-        declared = (
-            marker(...)
-            if param.default is inspect.Parameter.empty
-            else marker(param.default)
+        contract = contracts[param_name]
+        placement = resolve_parameter_placement(contract, SourceType.API)
+        marker = markers[placement]
+        marker_kwargs = (
+            {"description": contract.description} if contract.description else {}
         )
+        if contract.interface_name is not None:
+            marker_kwargs["alias"] = contract.interface_name
+        declared = (
+            marker(..., **marker_kwargs)
+            if contract.required
+            else marker(contract.default, **marker_kwargs)
+        )
+        annotation = hints.get(param_name, param.annotation)
         parameters.append(
             param.replace(
                 default=declared,
                 kind=inspect.Parameter.KEYWORD_ONLY,
-                annotation=hints.get(param_name, param.annotation),
+                annotation=(
+                    str
+                    if annotation is inspect.Parameter.empty
+                    and param_name in canonical_strings
+                    else annotation
+                ),
             )
         )
 
@@ -207,7 +337,8 @@ def build_fastapi_app(name: str, tools: list[RegisteredTool]) -> object:
 
     api_app = FastAPI(title=name)
     for tool in tools:
-        route_path = tool.info.route_path or f"/{tool.info.name}"
+        interface_name = resolve_tool_interface_name(tool.info, SourceType.API)
+        route_path = tool.info.route_path or f"/{interface_name}"
         method = (tool.info.http_method or "POST").upper()
         if method not in _HTTP_METHODS:
             method = "POST"
@@ -215,7 +346,20 @@ def build_fastapi_app(name: str, tools: list[RegisteredTool]) -> object:
             route_path,
             _fastapi_endpoint(tool.func, tool.info),
             methods=[method],
-            summary=tool.info.description,
+            name=interface_name,
+            operation_id=tool.info.operation_id,
+            summary=(
+                tool.info.route_summary
+                if tool.info.route_summary is not None
+                else tool.info.description
+            ),
+            description=(
+                tool.info.route_description
+                if tool.info.route_description is not None
+                else tool.info.description
+            ),
+            tags=list(tool.info.route_tags) or None,
+            deprecated=tool.info.route_deprecated,
         )
     return api_app
 
@@ -232,7 +376,8 @@ def build_fastmcp_app(name: str, tools: list[RegisteredTool]) -> object:
 
     mcp = FastMCP(name)
     for tool in tools:
-        mcp.tool(name=tool.info.name, description=tool.info.description)(
-            _restore_positional_only(tool.func)
-        )
+        mcp.tool(
+            name=resolve_tool_interface_name(tool.info, SourceType.MCP),
+            description=tool.info.description,
+        )(_restore_positional_only(tool.func, tool.info))
     return mcp

@@ -1,7 +1,8 @@
 """AST-based function body transformation between frameworks.
 
 Handles the I/O boundary conversion:
-- typer.echo(X)  ↔  return X
+- typer.echo(X) → return X
+- returned values are printed by the generated CLI command wrapper
 - return type annotation adjustment
 - Framework-specific exit/error handling
 """
@@ -10,8 +11,106 @@ from __future__ import annotations
 
 import ast
 import copy
+import textwrap
+from collections.abc import Sequence
+from dataclasses import replace
+from types import CodeType
 
-from intpot.core.models import SourceType, ToolInfo
+from intpot.core.models import ApplicationSchema, SourceType, ToolInfo, ToolSchema
+
+
+class _GlobalBindingRewriter(ast.NodeTransformer):
+    """Retarget aliases emitted by :func:`bind_global_name`."""
+
+    def __init__(self, original: str, replacement: str) -> None:
+        self.original = original
+        self.replacement = replacement
+        self.changed = False
+
+    def visit_Assign(self, node: ast.Assign) -> ast.AST:
+        self.generic_visit(node)
+        value = node.value
+        if not (
+            isinstance(value, ast.Subscript)
+            and isinstance(value.value, ast.Attribute)
+            and value.value.attr == "__globals__"
+            and isinstance(value.value.value, ast.Lambda)
+            and isinstance(value.slice, ast.Constant)
+            and value.slice.value == self.original
+        ):
+            return node
+        value.slice = ast.copy_location(ast.Constant(self.replacement), value.slice)
+        self.changed = True
+        return node
+
+
+class _GlobalDeclarationRewriter(ast.NodeTransformer):
+    """Make explicit self-reference globals close over the generated alias."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def visit_Global(self, node: ast.Global) -> ast.AST | None:
+        names = [name for name in node.names if name != self.name]
+        if not names:
+            return None
+        node.names = names
+        return node
+
+
+def bind_global_name(
+    body: str,
+    parameters: Sequence[str],
+    original: str,
+    replacement: str,
+    *,
+    is_async: bool = False,
+    preserve_unmodified: bool = False,
+) -> str:
+    """Bind a renamed global without rewriting shadowed names in nested scopes."""
+    try:
+        body_tree = ast.parse(body)
+    except SyntaxError:
+        return body
+
+    marker_rewriter = _GlobalBindingRewriter(original, replacement)
+    marker_rewriter.visit(body_tree)
+    if marker_rewriter.changed:
+        ast.fix_missing_locations(body_tree)
+        return ast.unparse(body_tree)
+    if original == replacement:
+        return body
+
+    arguments = ", ".join(parameters)
+    indented = textwrap.indent(body or "pass", "    ")
+    declaration = "async def" if is_async else "def"
+    source = f"{declaration} _intpot_tool({arguments}):\n{indented}\n"
+    try:
+        normalized_body = ast.unparse(body_tree)
+        module_code = compile(source, "<intpot-tool>", "exec")
+    except SyntaxError:
+        return body
+    function_code = next(
+        code
+        for code in module_code.co_consts
+        if isinstance(code, CodeType) and code.co_name == "_intpot_tool"
+    )
+
+    if original in {*function_code.co_varnames, *function_code.co_cellvars}:
+        return body if preserve_unmodified else normalized_body
+
+    if not any(
+        isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id == original
+        for node in ast.walk(body_tree)
+    ):
+        return body if preserve_unmodified else normalized_body
+    body_tree = _GlobalDeclarationRewriter(original).visit(body_tree)
+    ast.fix_missing_locations(body_tree)
+    normalized_body = ast.unparse(body_tree)
+    lookup = f"(lambda: None).__globals__[{replacement!r}]"
+    return f"{original} = {lookup}\n{normalized_body}"
 
 
 def transform_tools(
@@ -40,15 +139,53 @@ def transform_tools(
     return result
 
 
+def transform_schema(
+    schema: ApplicationSchema, target: SourceType
+) -> ApplicationSchema:
+    """Transform immutable tool behavior while sharing unchanged nested records."""
+    transformed_tools = []
+    changed = False
+    for tool in schema.tools:
+        function_body = tool.function_body
+        if function_body:
+            function_body = _transform_body(function_body, schema.source_type, target)
+            if (
+                target is SourceType.API
+                and schema.source_type is not target
+                and not _is_dict_type(tool.return_type)
+            ):
+                function_body = _wrap_returns_in_dict(function_body)
+        transformed_tool = replace(tool, function_body=function_body)
+        return_type = _target_return_type(transformed_tool, schema.source_type, target)
+        if function_body == tool.function_body and return_type == tool.return_type:
+            transformed_tools.append(tool)
+        else:
+            transformed_tools.append(
+                replace(
+                    tool,
+                    function_body=function_body,
+                    return_type=return_type,
+                )
+            )
+            changed = True
+    if not changed:
+        return schema
+    return replace(schema, tools=tuple(transformed_tools))
+
+
 def _is_dict_type(return_type: str) -> bool:
     """Whether an annotation already denotes a mapping FastAPI can serve as-is."""
     return return_type.lstrip("\"'").lower().startswith("dict")
 
 
-def _target_return_type(tool: ToolInfo, source: SourceType, target: SourceType) -> str:
+def _target_return_type(
+    tool: ToolInfo | ToolSchema, source: SourceType, target: SourceType
+) -> str:
     """Determine the correct return type for the target framework."""
     if target == SourceType.CLI:
-        return "None"
+        # The generated command wrapper returns None, but its implementation
+        # function preserves and prints the source function's returned value.
+        return tool.return_type
     if target == SourceType.API:
         # FastAPI validates the response against this annotation, so it has to
         # describe every reachable output. Explicit values are wrapped into a
@@ -270,13 +407,15 @@ class _TyperExitTransformer(ast.NodeTransformer):
 
 
 def _from_mcp(body: str, target: SourceType) -> str:
-    """Transform MCP body: return X → typer.echo(X) for CLI, passthrough for API."""
+    """MCP bodies already use return semantics supported by API and CLI output."""
     if target == SourceType.API:
         # MCP returns values, FastAPI returns values. Mostly compatible.
         return body
 
     if target == SourceType.CLI:
-        return _returns_to_echo(body)
+        # The CLI template's outer command prints the implementation result.
+        # Rewriting return to echo here would destroy early-return semantics.
+        return body
 
     return body
 
@@ -287,33 +426,15 @@ def _from_mcp(body: str, target: SourceType) -> str:
 
 
 def _from_api(body: str, target: SourceType) -> str:
-    """Transform API body: return X → typer.echo(X) for CLI, return X for MCP."""
+    """API bodies already use return semantics supported by MCP and CLI output."""
     if target == SourceType.CLI:
-        return _returns_to_echo(body)
+        return body
 
     if target == SourceType.MCP:
         # API returns dicts/values, MCP returns values. Compatible.
         return body
 
     return body
-
-
-# ---------------------------------------------------------------------------
-# Shared: return → typer.echo
-# ---------------------------------------------------------------------------
-
-
-def _returns_to_echo(body: str) -> str:
-    """Replace return statements with typer.echo() calls."""
-    try:
-        tree = ast.parse(body)
-    except SyntaxError:
-        return body
-
-    transformer = _ReturnToEcho()
-    new_tree = transformer.visit(tree)
-    ast.fix_missing_locations(new_tree)
-    return ast.unparse(new_tree)
 
 
 _FALLTHROUGH = "fallthrough"
@@ -465,37 +586,3 @@ class _WrapReturnInDict(ast.NodeTransformer):
         return ast.Return(
             value=ast.Dict(keys=[ast.Constant(value="result")], values=[node.value])
         )
-
-
-class _ReturnToEcho(ast.NodeTransformer):
-    """Replace `return X` with `typer.echo(X)` at function top-level scope."""
-
-    def __init__(self) -> None:
-        self._depth = 0
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-        # Don't transform returns inside nested functions
-        self._depth += 1
-        result = self.generic_visit(node)
-        self._depth -= 1
-        return result
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def visit_Return(self, node: ast.Return) -> ast.AST:
-        if self._depth > 0:
-            return node  # Inside nested function, leave alone
-        if node.value is None:
-            return node  # bare `return` — keep as-is
-        echo_call = ast.Expr(
-            value=ast.Call(
-                func=ast.Attribute(
-                    value=ast.Name(id="typer", ctx=ast.Load()),
-                    attr="echo",
-                    ctx=ast.Load(),
-                ),
-                args=[node.value],
-                keywords=[],
-            )
-        )
-        return echo_call

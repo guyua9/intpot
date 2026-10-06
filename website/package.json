@@ -1,0 +1,21 @@
+{
+  "name": "intpot-website",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "node --test && node scripts/sync-project-docs.mjs && astro build && node scripts/emit-markdown-downloads.mjs && node scripts/verify-rendered-output.mjs && playwright test",
+    "test": "node --test",
+    "test:parity": "node scripts/verify-playground-parity.mjs",
+    "preview": "astro preview",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.42.5",
+    "astro": "^7.3.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  }
+}

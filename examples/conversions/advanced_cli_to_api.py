@@ -6,45 +6,87 @@ import json
 from fastapi import FastAPI as _intpot_fastapi_FastAPI, Body as _intpot_fastapi_Body
 
 app = _intpot_fastapi_FastAPI(title='advanced_cli')
+_intpot_required = object()
 
 
-@app.post("/create")
-def create(
-    title: str = _intpot_fastapi_Body(..., description='Task title'),
-    priority: int = _intpot_fastapi_Body(default=3, description='Priority level 1-5'),
-    tags: str = _intpot_fastapi_Body(default='', description='Comma-separated tags'),
+def _create_impl(
+    title: str = _intpot_required,
+    priority: int = 3,
+    tags: str = '',
 ) -> dict:
     """Create a new task with optional priority and tags."""
-
+    if title is _intpot_required:
+        raise TypeError('Missing required argument: title')
     tag_list = [t.strip() for t in tags.split(',') if t.strip()]
     task = {'title': title, 'priority': priority, 'tags': tag_list}
     return {'result': json.dumps(task, indent=2)}
 
 
-@app.post("/search")
-def search(
-    query: str = _intpot_fastapi_Body(..., description='Search query'),
-    limit: int = _intpot_fastapi_Body(default=10, description='Max results to return'),
-    include_done: bool = _intpot_fastapi_Body(default=False, description='Include completed tasks'),
+@app.post(
+    '/create',
+    name='create',
+    summary='Create a new task with optional priority and tags.',
+    description='Create a new task with optional priority and tags.',
+)
+def create(
+    title: str = _intpot_fastapi_Body(..., description='Task title'),
+    priority: int = _intpot_fastapi_Body(default=3, description='Priority level 1-5', alias='priority'),
+    tags: str = _intpot_fastapi_Body(default='', description='Comma-separated tags', alias='tags'),
+) -> dict:
+    """Create a new task with optional priority and tags."""
+
+    return _create_impl(title, priority, tags)
+
+def _search_impl(
+    query: str = _intpot_required,
+    limit: int = 10,
+    include_done: bool = False,
 ) -> dict:
     """Search tasks by title or tag."""
-
+    if query is _intpot_required:
+        raise TypeError('Missing required argument: query')
     results = [{'title': f'Match: {query}', 'done': False}, {'title': f'Another: {query}', 'done': True}]
     if not include_done:
         results = [r for r in results if not r['done']]
     return {'result': json.dumps(results[:limit], indent=2)}
 
 
-@app.post("/stats")
-def stats() -> dict:
-    """Show task statistics."""
+@app.post(
+    '/search',
+    name='search',
+    summary='Search tasks by title or tag.',
+    description='Search tasks by title or tag.',
+)
+def search(
+    query: str = _intpot_fastapi_Body(..., description='Search query'),
+    limit: int = _intpot_fastapi_Body(default=10, description='Max results to return', alias='limit'),
+    include_done: bool = _intpot_fastapi_Body(default=False, description='Include completed tasks', alias='include-done'),
+) -> dict:
+    """Search tasks by title or tag."""
 
+    return _search_impl(query, limit, include_done)
+
+def _stats_impl(
+) -> dict:
+    """Show task statistics."""
     summary = {'total': 42, 'done': 15, 'pending': 27}
     return {'result': json.dumps(summary)}
 
 
+@app.post(
+    '/stats',
+    name='stats',
+    summary='Show task statistics.',
+    description='Show task statistics.',
+)
+def stats() -> dict:
+    """Show task statistics."""
+
+    return _stats_impl()
+
+
 if __name__ == "__main__":
-    import uvicorn
+    import uvicorn as _intpot_api_uvicorn
 
     # Loopback only. Change to "0.0.0.0" to expose this on the network.
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    _intpot_api_uvicorn.run(app, host="127.0.0.1", port=8000)

@@ -8,9 +8,31 @@ import json
 from fastapi import FastAPI as _intpot_fastapi_FastAPI, Body as _intpot_fastapi_Body
 
 app = _intpot_fastapi_FastAPI(title='notes-server')
+_intpot_required = object()
 
 
-@app.post("/create_note")
+def _create_note_impl(
+    title: str = _intpot_required,
+    body: str = _intpot_required,
+    tags: str = '',
+) -> dict:
+    """Create a new note with a generated ID."""
+    if title is _intpot_required:
+        raise TypeError('Missing required argument: title')
+    if body is _intpot_required:
+        raise TypeError('Missing required argument: body')
+    note_id = hashlib.md5(title.encode()).hexdigest()[:8]
+    tag_list = [t.strip() for t in tags.split(',') if t.strip()]
+    note = {'id': note_id, 'title': title, 'body': body, 'tags': tag_list, 'created': datetime.now().isoformat()}
+    return {'result': json.dumps(note, indent=2)}
+
+
+@app.post(
+    '/create_note',
+    name='create_note',
+    summary='Create a new note with a generated ID.',
+    description='Create a new note with a generated ID.',
+)
 def create_note(
     title: str = _intpot_fastapi_Body(...),
     body: str = _intpot_fastapi_Body(...),
@@ -18,46 +40,81 @@ def create_note(
 ) -> dict:
     """Create a new note with a generated ID."""
 
-    note_id = hashlib.md5(title.encode()).hexdigest()[:8]
-    tag_list = [t.strip() for t in tags.split(',') if t.strip()]
-    note = {'id': note_id, 'title': title, 'body': body, 'tags': tag_list, 'created': datetime.now().isoformat()}
-    return {'result': json.dumps(note, indent=2)}
+    return _create_note_impl(title, body, tags)
+
+def _search_notes_impl(
+    query: str = _intpot_required,
+    max_results: int = 5,
+) -> dict:
+    """Search notes by keyword in title or body."""
+    if query is _intpot_required:
+        raise TypeError('Missing required argument: query')
+    results = [{'id': 'abc123', 'title': f'Match: {query}', 'snippet': '...'}]
+    return {'result': json.dumps(results[:max_results])}
 
 
-@app.post("/search_notes")
+@app.post(
+    '/search_notes',
+    name='search_notes',
+    summary='Search notes by keyword in title or body.',
+    description='Search notes by keyword in title or body.',
+)
 def search_notes(
     query: str = _intpot_fastapi_Body(...),
     max_results: int = _intpot_fastapi_Body(default=5),
 ) -> dict:
     """Search notes by keyword in title or body."""
 
-    results = [{'id': 'abc123', 'title': f'Match: {query}', 'snippet': '...'}]
-    return {'result': json.dumps(results[:max_results])}
+    return _search_notes_impl(query, max_results)
+
+async def _summarize_impl(
+    note_ids: str = _intpot_required,
+) -> dict:
+    """Summarize multiple notes by their IDs (comma-separated)."""
+    if note_ids is _intpot_required:
+        raise TypeError('Missing required argument: note_ids')
+    ids = [nid.strip() for nid in note_ids.split(',')]
+    return {'result': json.dumps({'summarized': len(ids), 'ids': ids})}
 
 
-@app.post("/summarize")
+@app.post(
+    '/summarize',
+    name='summarize',
+    summary='Summarize multiple notes by their IDs (comma-separated).',
+    description='Summarize multiple notes by their IDs (comma-separated).',
+)
 async def summarize(
     note_ids: str = _intpot_fastapi_Body(...),
 ) -> dict:
     """Summarize multiple notes by their IDs (comma-separated)."""
 
-    ids = [nid.strip() for nid in note_ids.split(',')]
-    return {'result': json.dumps({'summarized': len(ids), 'ids': ids})}
+    return await _summarize_impl(note_ids)
 
-
-@app.post("/export_all")
-def export_all(
-    format: str = _intpot_fastapi_Body(default='json'),
+def _export_all_impl(
+    format: str = 'json',
 ) -> dict:
     """Export all notes in the specified format."""
-
     if format == 'json':
         return {'result': json.dumps({'notes': [], 'count': 0})}
     return {'result': 'No notes found.'}
 
 
+@app.post(
+    '/export_all',
+    name='export_all',
+    summary='Export all notes in the specified format.',
+    description='Export all notes in the specified format.',
+)
+def export_all(
+    format: str = _intpot_fastapi_Body(default='json'),
+) -> dict:
+    """Export all notes in the specified format."""
+
+    return _export_all_impl(format)
+
+
 if __name__ == "__main__":
-    import uvicorn
+    import uvicorn as _intpot_api_uvicorn
 
     # Loopback only. Change to "0.0.0.0" to expose this on the network.
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    _intpot_api_uvicorn.run(app, host="127.0.0.1", port=8000)
